@@ -4,3 +4,10 @@ __pycache__/
 .env
 *.egg-info/
 spam_engine.py
+.playwright/
+.playwright-cli/
+test_comprehensive.py
+test_variants.py
+test_results.json
+test_texts.json
+compare_test.py

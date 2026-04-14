@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Docs — Spam Checker</title>
+    <meta name="description" content="HTTP API that scores email copy for spam triggers. Built for developers and AI agents. Deterministic, public, no auth.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="topbar">
+        <div class="topbar-inner">
+            <a href="/" class="logo">
+                <span class="logo-mark">S</span>
+                Spam Checker
+            </a>
+            <nav class="nav">
+                <a href="/">Check</a>
+                <a href="/docs" class="active">API Docs</a>
+                <a href="https://github.com/mihajlo-133/spam-checker" target="_blank" rel="noopener">GitHub</a>
+            </nav>
+        </div>
+    </div>
+
+    <div class="container">
+        <h1>API Reference</h1>
+        <p class="lead">HTTP API for scoring email copy against {{ total }} spam-trigger patterns. Deterministic, stateless, no authentication. Optimized for use by scripts, CI pipelines, and AI agents.</p>
+
+        <div class="callout info">
+            <strong>For AI agents:</strong> A machine-readable version of these docs is available at
+            <a href="/llms.txt"><code class="inline">/llms.txt</code></a> (markdown) and
+            <a href="/openapi.json"><code class="inline">/openapi.json</code></a> (OpenAPI 3.1).
+            Fetch either at session start if your agent generates clients or uses this API dynamically.
+        </div>
+
+        <div class="docs-grid">
+            <aside class="docs-toc">
+                <h4>On this page</h4>
+                <a href="#overview" class="toc-link">Overview</a>
+                <a href="#quickstart" class="toc-link">Quickstart</a>
+                <a href="#post-check" class="toc-link">POST /api/check</a>
+                <a href="#get-health" class="toc-link">GET /api/health</a>
+                <a href="#categories" class="toc-link">Categories</a>
+                <a href="#scoring" class="toc-link">Scoring algorithm</a>
+                <a href="#agents" class="toc-link">Guide for AI agents</a>
+                <a href="#examples" class="toc-link">Client examples</a>
+                <a href="#ops" class="toc-link">Operational notes</a>
+            </aside>
+
+            <main>
+                <section id="overview">
+                    <h2>Overview</h2>
+                    <table class="spec-table">
+                        <tr><th>Base URL</th><td><code>{{ base_url }}</code></td></tr>
+                        <tr><th>Authentication</th><td>None (public API)</td></tr>
+                        <tr><th>Content-Type</th><td><code>application/json</code> or <code>application/x-www-form-urlencoded</code></td></tr>
+                        <tr><th>Determinism</th><td>Same input always produces the same output. No state, no randomness, no LLM.</td></tr>
+                        <tr><th>Rate limits</th><td>None enforced. Hosted on Render free tier — keep request volume reasonable.</td></tr>
+                        <tr><th>Typical latency</th><td>250–400ms warm. First request after 15 min idle can take ~30s (cold start).</td></tr>
+                    </table>
+                </section>
+
+                <section id="quickstart">
+                    <h2>Quickstart</h2>
+                    <p>Send a <code class="inline">POST</code> to <code class="inline">/api/check</code> with the email text:</p>
+
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>curl</span>
+                            <button class="copy-btn" data-copy="quickstart-curl">Copy</button>
+                        </div>
+<pre id="quickstart-curl">curl -X POST {{ base_url }}/api/check \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hi Sarah, noticed your team is hiring SDRs — quick question."}'</pre>
+                    </div>
+
+                    <p>Response:</p>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>json</span>
+                            <button class="copy-btn" data-copy="quickstart-resp">Copy</button>
+                        </div>
+<pre id="quickstart-resp">{
+  "score": 2,
+  "rating": "Great",
+  "total_hits": 2,
+  "word_count": 12,
+  "categories": {
+    "unnatural": ["Hi", "question"]
+  }
+}</pre>
+                    </div>
+                </section>
+
+                <section id="post-check">
+                    <div class="endpoint-head">
+                        <span class="http-method post">POST</span>
+                        <span class="endpoint-path">/api/check</span>
+                    </div>
+                    <p>Check email text and return a scored result.</p>
+
+                    <h3>Request body (JSON)</h3>
+                    <table class="spec-table">
+                        <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        <tr><td><code>text</code></td><td>string</td><td>Yes</td><td>Email subject + body as a single string. Variable placeholders like <code>{{ '{{firstName}}' }}</code> are ignored by the scorer.</td></tr>
+                    </table>
+
+                    <h3>Response (200 OK)</h3>
+                    <table class="spec-table">
+                        <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+                        <tr><td><code>score</code></td><td>integer</td><td>Raw numeric score. Higher = spammier. No upper bound.</td></tr>
+                        <tr><td><code>rating</code></td><td>enum</td><td>One of <code>"Great"</code>, <code>"Okay"</code>, <code>"Poor"</code>. Derived from <code>score</code>.</td></tr>
+                        <tr><td><code>total_hits</code></td><td>integer</td><td>Total unique (keyword, category) pairs matched.</td></tr>
+                        <tr><td><code>word_count</code></td><td>integer</td><td>Word count of the input text (whitespace split).</td></tr>
+                        <tr><td><code>categories</code></td><td>object</td><td>Keys are category names. Values are arrays of matched keyword strings.</td></tr>
+                    </table>
+
+                    <h3>Error responses</h3>
+                    <table class="spec-table">
+                        <tr><th>Status</th><th>Body</th><th>When</th></tr>
+                        <tr><td><code>400</code></td><td><code>{"error": "No text provided"}</code></td><td><code>text</code> is empty or missing.</td></tr>
+                    </table>
+                </section>
+
+                <section id="get-health">
+                    <div class="endpoint-head">
+                        <span class="http-method get">GET</span>
+                        <span class="endpoint-path">/api/health</span>
+                    </div>
+                    <p>Health check and capability discovery. Returns the pattern count and category list.</p>
+
+                    <h3>Response (200 OK)</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>json</span>
+                            <button class="copy-btn" data-copy="health-resp">Copy</button>
+                        </div>
+<pre id="health-resp">{
+  "status": "ok",
+  "patterns": 765,
+  "categories": ["urgency", "shady", "overpromise", "money", "unnatural"]
+}</pre>
+                    </div>
+                </section>
+
+                <section id="categories">
+                    <h2>Categories</h2>
+                    <p>Every spam pattern belongs to exactly one of five categories. The category a pattern falls into affects the final score (see <a href="#scoring">Scoring</a>).</p>
+
+                    <table class="spec-table">
+                        <tr><th>Category</th><th>What it catches</th><th>Example keywords</th></tr>
+                        <tr><td><code>urgency</code></td><td>Pressure and false-scarcity language</td><td>Act now, Hurry, Limited time</td></tr>
+                        <tr><td><code>shady</code></td><td>Scam, adult, and high-risk content</td><td>Free, Risk-free, Miracle</td></tr>
+                        <tr><td><code>overpromise</code></td><td>Hyperbolic claims</td><td>Guaranteed, Best price, Incredible</td></tr>
+                        <tr><td><code>money</code></td><td>Financial-incentive language</td><td>$$$, Earn, Cash, Income</td></tr>
+                        <tr><td><code>unnatural</code></td><td>Awkward or bot-written phrasing</td><td>ALL CAPS words, mass-mail artifacts</td></tr>
+                    </table>
+                </section>
+
+                <section id="scoring">
+                    <h2>Scoring algorithm</h2>
+                    <p>The score is computed deterministically from the matched categories:</p>
+
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>pseudocode</span>
+                            <button class="copy-btn" data-copy="scoring">Copy</button>
+                        </div>
+<pre id="scoring">score = total_hits
+
+if "money" in matched_categories or "shady" in matched_categories:
+    score += 20
+
+if "urgency" in matched_categories or "overpromise" in matched_categories:
+    score += 10
+
+rating = "Poor"  if score > 20
+       = "Okay"  if score > 5
+       = "Great" otherwise</pre>
+                    </div>
+
+                    <div class="callout warn">
+                        <strong>Implications:</strong>
+                        <ul style="margin: 8px 0 0 20px; line-height: 1.7;">
+                            <li>Any single hit in <code>money</code> or <code>shady</code> adds 20 points — pushes to at least "Okay", often "Poor".</li>
+                            <li>Any single hit in <code>urgency</code> or <code>overpromise</code> adds 10 points.</li>
+                            <li>Hits in <code>unnatural</code> count only as +1 each; they never trigger a category bonus.</li>
+                            <li>The same keyword occurring multiple times counts as 1 hit (deduplicated by keyword + category).</li>
+                        </ul>
+                    </div>
+                </section>
+
+                <section id="agents">
+                    <h2>Guide for AI agents</h2>
+                    <p>When your agent receives a response, apply this decision logic:</p>
+
+                    <table class="spec-table">
+                        <tr><th>Rating</th><th>Recommended action</th></tr>
+                        <tr><td><code>"Great"</code></td><td>Copy is clean. Ship it.</td></tr>
+                        <tr><td><code>"Okay"</code></td><td>Review flagged words. Rewrite 1–2 specific words. Often acceptable for B2B cold email.</td></tr>
+                        <tr><td><code>"Poor"</code></td><td>High risk. Rewrite required. Inspect <code>categories</code> to see which buckets contributed.</td></tr>
+                    </table>
+
+                    <h3>Calibration notes</h3>
+                    <div class="callout info">
+                        <strong>The engine is aggressive for B2B outbound.</strong> Words like "new", "please", "open", "problem" can trigger <code>unnatural</code>.
+                        <ul style="margin: 8px 0 0 20px; line-height: 1.7;">
+                            <li>A <code>"Poor"</code> rating driven entirely by <code>unnatural</code> matches — with no <code>money</code>, <code>shady</code>, <code>urgency</code>, or <code>overpromise</code> hits — is usually a false positive for B2B.</li>
+                            <li>A <code>"Poor"</code> rating with any <code>money</code> or <code>shady</code> hit is almost always a true positive. Rewrite that passage.</li>
+                            <li>Treat this tool as a <em>lexical filter</em>, not a deliverability predictor. It does not check DNS, authentication, reputation, or inbox placement.</li>
+                        </ul>
+                    </div>
+
+                    <h3>When to use this API</h3>
+                    <ul style="margin: 8px 0 16px 20px; line-height: 1.8; color: var(--tx2);">
+                        <li>Check email copy for spam triggers before sending a cold-email campaign.</li>
+                        <li>Compare two copy variants and pick the one with the lower score.</li>
+                        <li>Filter LLM-generated email drafts for deliverability risk.</li>
+                        <li>Audit a library of templates for accumulated spam words.</li>
+                    </ul>
+
+                    <h3>When NOT to use</h3>
+                    <ul style="margin: 8px 0 16px 20px; line-height: 1.8; color: var(--tx2);">
+                        <li>General deliverability scoring (needs DNS + auth + reputation checks).</li>
+                        <li>Inbox placement prediction (needs a seedlist test).</li>
+                        <li>Content moderation (tuned for marketing spam, not abuse detection).</li>
+                    </ul>
+                </section>
+
+                <section id="examples">
+                    <h2>Client examples</h2>
+
+                    <h3>Python (stdlib only)</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>python</span>
+                            <button class="copy-btn" data-copy="py-example">Copy</button>
+                        </div>
+<pre id="py-example">import json
+import urllib.request
+
+def check_spam(text: str) -> dict:
+    req = urllib.request.Request(
+        "{{ base_url }}/api/check",
+        data=json.dumps({"text": text}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+result = check_spam("Act now for a free offer!")
+print(result["rating"])  # "Poor"</pre>
+                    </div>
+
+                    <h3>JavaScript (fetch)</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>javascript</span>
+                            <button class="copy-btn" data-copy="js-example">Copy</button>
+                        </div>
+<pre id="js-example">const resp = await fetch("{{ base_url }}/api/check", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ text: "Act now for a free offer!" }),
+});
+const data = await resp.json();
+console.log(data.rating); // "Poor"</pre>
+                    </div>
+
+                    <h3>Batch scoring (parallel requests)</h3>
+                    <div class="code-block">
+                        <div class="code-block-label">
+                            <span>python</span>
+                            <button class="copy-btn" data-copy="batch-example">Copy</button>
+                        </div>
+<pre id="batch-example">import concurrent.futures
+
+variants = ["variant 1 text", "variant 2 text", "variant 3 text"]
+with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+    results = list(ex.map(check_spam, variants))
+best = min(results, key=lambda r: r["score"])
+print(best)</pre>
+                    </div>
+                </section>
+
+                <section id="ops">
+                    <h2>Operational notes</h2>
+                    <ul style="margin: 8px 0 16px 20px; line-height: 1.8; color: var(--tx2);">
+                        <li><strong>Hosting:</strong> Render free tier, Frankfurt region.</li>
+                        <li><strong>Cold start:</strong> ~30s after 15 min idle. An UptimeRobot HEAD ping every 5 min keeps the service warm during business hours.</li>
+                        <li><strong>Warm latency:</strong> 250–400ms typical.</li>
+                        <li><strong>Persistence:</strong> The API does not log or store submitted text.</li>
+                        <li><strong>Authentication:</strong> None. Public endpoint. Do not submit sensitive PII.</li>
+                        <li><strong>Source:</strong> <a href="https://github.com/mihajlo-133/spam-checker" target="_blank" rel="noopener">github.com/mihajlo-133/spam-checker</a></li>
+                        <li><strong>Engine:</strong> 765 regex patterns ported from Mailmeteor (version 2025-04-21). 15/15 rating match against the Mailmeteor web UI.</li>
+                    </ul>
+                </section>
+
+                <div class="footer">
+                    <span>Prospeqt · Spam Checker API</span>
+                    <span>
+                        <a href="/">Check</a> ·
+                        <a href="/llms.txt">llms.txt</a> ·
+                        <a href="/openapi.json">OpenAPI</a>
+                    </span>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script>
+        // Copy-to-clipboard for code blocks
+        document.querySelectorAll('.copy-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const targetId = btn.dataset.copy;
+                const target = document.getElementById(targetId);
+                if (!target) return;
+                try {
+                    await navigator.clipboard.writeText(target.textContent);
+                    const original = btn.textContent;
+                    btn.textContent = 'Copied';
+                    btn.classList.add('copied');
+                    setTimeout(() => {
+                        btn.textContent = original;
+                        btn.classList.remove('copied');
+                    }, 1400);
+                } catch (e) {
+                    btn.textContent = 'Failed';
+                    setTimeout(() => { btn.textContent = 'Copy'; }, 1400);
+                }
+            });
+        });
+
+        // Active TOC link on scroll
+        const sections = document.querySelectorAll('main section[id]');
+        const tocLinks = document.querySelectorAll('.toc-link');
+
+        function onScroll() {
+            let current = '';
+            const offset = window.scrollY + 120;
+            sections.forEach(s => {
+                if (s.offsetTop <= offset) current = s.id;
+            });
+            tocLinks.forEach(a => {
+                a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+            });
+        }
+
+        window.addEventListener('scroll', onScroll, { passive: true });
+        onScroll();
+    </script>
+</body>
+</html>

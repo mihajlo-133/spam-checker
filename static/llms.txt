@@ -1,0 +1,193 @@
+# Spam Checker API
+
+> HTTP API that scores email copy for spam-trigger words using 765 regex patterns across 5 categories. Returns a rating (Great | Okay | Poor), a numeric score, total hit count, and the specific words that triggered each category. Mirrors the scoring algorithm used by Mailmeteor's public spam checker.
+
+Base URL: `https://spam-checker-gig9.onrender.com`
+Authentication: None (public API)
+Rate limits: None enforced (hosted on Render free tier — keep requests reasonable)
+Determinism: Same input always produces the same output. No state, no randomness, no LLM.
+
+## When to use this API
+
+Use this API when an agent needs to:
+- Check email copy for spam triggers before sending a cold-email campaign
+- Compare two copy variants and pick the cleaner one
+- Filter generated email drafts for deliverability risk
+- Audit a library of templates for accumulated spam words
+
+Do NOT use this API for:
+- General deliverability scoring (this only checks wordlists, not DNS, auth, or reputation)
+- Inbox placement prediction (this is a lexical filter, not a seedlist test)
+- Content moderation (this is tuned for sales/marketing spam, not abuse detection)
+
+## Endpoints
+
+### POST /api/check
+
+Check email text and return scored result.
+
+Request:
+- Method: `POST`
+- URL: `/api/check`
+- Content-Type: `application/json` OR `application/x-www-form-urlencoded`
+- Body (JSON): `{"text": "<email subject + body as a single string>"}`
+- Body (form): `text=<url-encoded email text>`
+
+Response (200 OK):
+```json
+{
+  "score": 31,
+  "rating": "Poor",
+  "total_hits": 13,
+  "word_count": 12,
+  "categories": {
+    "urgency": ["Act", "Click", "Now"],
+    "shady": ["Free", "Free offer"]
+  }
+}
+```
+
+Response fields:
+- `score` (integer): Raw numeric score. Higher = spammier. No upper bound.
+- `rating` (string enum): One of `"Great"`, `"Okay"`, `"Poor"`. Derived from `score`.
+- `total_hits` (integer): Total number of unique (keyword, category) pairs matched.
+- `word_count` (integer): Word count of the input text (simple whitespace split).
+- `categories` (object): Keys are category names (subset of the 5 categories). Values are arrays of matched keyword strings.
+
+Error responses:
+- `400 Bad Request`: `{"error": "No text provided"}` — when `text` is empty or missing.
+
+### GET /api/health
+
+Health check and capability discovery.
+
+Response (200 OK):
+```json
+{
+  "status": "ok",
+  "patterns": 765,
+  "categories": ["urgency", "shady", "overpromise", "money", "unnatural"]
+}
+```
+
+### GET /openapi.json
+
+Full OpenAPI 3.1 specification for this API. Parse this if your agent generates clients dynamically.
+
+### GET /llms.txt
+
+This file. Plain-text markdown documentation optimized for LLM consumption.
+
+## Categories
+
+The 5 spam categories, each mapping to a bucket of regex patterns:
+
+| Category | What it catches | Example keywords |
+|----------|-----------------|------------------|
+| `urgency` | Pressure and false-scarcity language | "Act now", "Hurry", "Limited time", "Don't delete" |
+| `shady` | Scam, adult, and high-risk content | "Free", "Risk-free", "Nigerian", "Miracle" |
+| `overpromise` | Hyperbolic claims | "Guaranteed", "Best price", "Amazing", "Incredible" |
+| `money` | Financial-incentive language | "$$$", "Earn", "Cash", "Income", "Profit" |
+| `unnatural` | Awkward, bot-written phrasing | Overuse of exclamation, ALL CAPS words, mass-mail artifacts |
+
+## Scoring algorithm
+
+The score is computed as:
+
+```
+score = total_hits
+if "money" in matched_categories or "shady" in matched_categories:
+    score += 20
+if "urgency" in matched_categories or "overpromise" in matched_categories:
+    score += 10
+
+rating = "Poor"  if score > 20
+       = "Okay"  if score > 5
+       = "Great" otherwise
+```
+
+Key implications for agents:
+- Any single hit in `money` or `shady` adds 20 points and pushes to at least "Okay" (often "Poor").
+- Any single hit in `urgency` or `overpromise` adds 10 points.
+- Hits in `unnatural` add only their count — they never trigger the category bonus.
+- Duplicate hits of the same keyword within one text count as 1 hit (keyword+category deduplication).
+
+## Rating interpretation (for agents)
+
+When your agent receives a response, use this decision logic:
+
+- `rating == "Great"` → Copy is clean. Ship it.
+- `rating == "Okay"` → Review flagged words. Consider a rewrite of 1-2 specific words. Often acceptable for B2B cold email.
+- `rating == "Poor"` → High risk. Rewrite required. Inspect `categories` to see which buckets contributed.
+
+Known calibration notes:
+- The engine is aggressive for B2B — benign words like "new", "please", "open", "problem" can trigger `unnatural`.
+- A `"Poor"` rating driven entirely by `unnatural` matches (no `money`/`shady`/`urgency`/`overpromise`) is usually a false positive for B2B outbound.
+- A `"Poor"` rating with any `money` or `shady` hit is almost always a true positive — rewrite that passage.
+
+## Examples
+
+### curl
+
+```bash
+curl -X POST https://spam-checker-gig9.onrender.com/api/check \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hi {{firstName}}, noticed your team is hiring SDRs — quick question about your onboarding process."}'
+```
+
+### Python (stdlib only)
+
+```python
+import json
+import urllib.request
+
+def check_spam(text: str) -> dict:
+    req = urllib.request.Request(
+        "https://spam-checker-gig9.onrender.com/api/check",
+        data=json.dumps({"text": text}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read())
+
+result = check_spam("Act now for a free offer!")
+print(result["rating"])  # "Poor"
+```
+
+### JavaScript (fetch)
+
+```javascript
+const resp = await fetch("https://spam-checker-gig9.onrender.com/api/check", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ text: "Act now for a free offer!" }),
+});
+const data = await resp.json();
+console.log(data.rating); // "Poor"
+```
+
+### Batch usage pattern
+
+To score multiple variants, issue N parallel requests. The API is stateless and thread-safe.
+
+```python
+import concurrent.futures
+variants = ["variant 1 text", "variant 2 text", "variant 3 text"]
+with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+    results = list(ex.map(check_spam, variants))
+best = min(results, key=lambda r: r["score"])
+```
+
+## Operational notes
+
+- Hosted on Render free tier in Frankfurt. First request after 15 minutes of idle can take ~30 seconds (cold start). An UptimeRobot ping keeps the service warm during business hours.
+- Typical warm response time: 250-400ms.
+- No persistence: the API does not log or store submitted text.
+- No authentication: the endpoint is public. Do not submit sensitive PII.
+
+## Source
+
+- GitHub: https://github.com/mihajlo-133/spam-checker
+- Engine: 765 regex patterns ported from Mailmeteor's client-side JS (version 2025-04-21)
+- Validation: 15/15 test emails match Mailmeteor's live UI output across Clean, Moderate, Aggressive, and Edge cases
